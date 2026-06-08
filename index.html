@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>GPS Vivo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root {
+            --orange: #F26522;
+            --orange-dim: rgba(242,101,34,0.15);
+            --green: #00e5a0;
+            --green-dim: rgba(0,229,160,0.12);
+            --bg: #080c14;
+            --panel: #0c1220;
+            --border: rgba(242,101,34,0.18);
+            --text: #e8eaf2;
+            --muted: #5a6480;
+            --card: #111827;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* HEADER */
+        #header {
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            padding: 10px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            z-index: 1000;
+        }
+        .logo {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--orange);
+            letter-spacing: 1px;
+        }
+        .logo span { color: var(--muted); }
+        .vbar { width:1px; height:24px; background:var(--border); }
+        .room-group { display:flex; align-items:center; gap:8px; flex:1; min-width:180px; }
+        #roomId {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.82rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 7px 12px;
+            border-radius: 6px;
+            width: 110px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            outline: none;
+            transition: border-color .2s;
+        }
+        #roomId:focus { border-color: var(--orange); }
+        #roomId::placeholder { color: var(--muted); letter-spacing:1px; font-size:.72rem; }
+        .btn {
+            font-family: 'DM Sans', sans-serif;
+            font-weight: 500;
+            font-size: 0.78rem;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all .2s;
+            white-space: nowrap;
+        }
+        .btn-primary { background: var(--orange); color: #fff; }
+        .btn-primary:hover { background: #e05510; }
+        .btn-ghost {
+            background: transparent;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            padding: 7px 12px;
+            font-size: 0.8rem;
+        }
+        .btn-ghost:hover { border-color: var(--orange); color: var(--orange); }
+
+        /* STATUS PILL */
+        #statusPill {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.68rem;
+            padding: 5px 12px;
+            border-radius: 20px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            color: var(--muted);
+            display: flex; align-items: center; gap:6px;
+            transition: all .3s;
+            white-space: nowrap;
+            margin-left: auto;
+        }
+        #statusPill.active  { border-color: var(--green);  color: var(--green);  background: var(--green-dim); }
+        #statusPill.waiting { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+        .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
+        .dot.pulse { animation: pulse 1.4s ease-in-out infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.7)} }
+
+        /* MAP */
+        #map { flex:1; width:100%; }
+
+        /* BOTTOM BAR */
+        #infoBar {
+            background: var(--panel);
+            border-top: 1px solid var(--border);
+            padding: 7px 16px;
+            display: flex;
+            gap: 18px;
+            align-items: center;
+            font-size: 0.7rem;
+            color: var(--muted);
+            flex-wrap: wrap;
+            z-index: 1000;
+        }
+        .ii { display:flex; align-items:center; gap:5px; }
+        .ii strong {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--text);
+        }
+        #distancia { color: var(--orange); font-family:'Space Mono',monospace; font-weight:700; }
+
+        /* MODAL FIREBASE */
+        #fbModal {
+            display: none;
+            position: fixed; inset:0;
+            background: rgba(0,0,0,.75);
+            z-index: 9999;
+            align-items: center; justify-content: center;
+        }
+        #fbModal.show { display:flex; }
+        .modal-box {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px 24px;
+            max-width: 420px;
+            width: 90%;
+            font-size: 0.82rem;
+        }
+        .modal-box h2 {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--orange);
+            margin-bottom: 14px;
+        }
+        .modal-box label { color: var(--muted); font-size:0.72rem; display:block; margin-bottom:4px; margin-top:10px; }
+        .modal-box input {
+            width:100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius:6px;
+            font-size: 0.78rem;
+            outline:none;
+        }
+        .modal-box input:focus { border-color: var(--orange); }
+        .modal-actions { display:flex; gap:10px; margin-top:18px; justify-content:flex-end; }
+        .note { color: var(--muted); font-size:0.68rem; margin-top:12px; line-height:1.5; }
+        .note a { color: var(--orange); }
+
+        /* TOAST */
+        #toast {
+            position:fixed; bottom:56px; left:50%;
+            transform: translateX(-50%) translateY(12px);
+            background: var(--card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 9px 18px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-family: 'Space Mono', monospace;
+            opacity:0; transition: all .25s;
+            z-index:9998; pointer-events:none; white-space:nowrap;
+        }
+        #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+        /* Leaflet */
+        .leaflet-control-attribution { display:none !important; }
+        .my-icon, .other-icon { font-size:22px; filter:drop-shadow(0 2px 6px rgba(0,0,0,.8)); }
+        .other-icon { filter:drop-shadow(0 2px 8px rgba(242,101,34,.7)); }
+        .leaflet-popup-content-wrapper {
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 8px !important;
+            color: var(--text) !important;
+            font-family: 'DM Sans', sans-serif !important;
+            font-size: 0.78rem !important;
+            box-shadow: 0 4px 20px rgba(0,0,0,.5) !important;
+        }
+        .leaflet-popup-tip { background: var(--card) !important; }
+        .leaflet-popup-close-button { color: var(--muted) !important; }
+
+        @media(max-width:600px){
+            .vbar { display:none; }
+            #header { gap:8px; }
+            .room-group { min-width:0; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div id="header">
+    <div class="logo">GPS<span>·</span>VIVO</div>
+    <div class="vbar"></div>
+    <div class="room-group">
+        <input type="text" id="roomId" placeholder="CÓDIGO" maxlength="6" autocomplete="off" spellcheck="false">
+        <button class="btn btn-primary" id="crearBtn">Unirse</button>
+        <button class="btn btn-ghost" id="compartirBtn" title="Compartir enlace">🔗</button>
+        <button class="btn btn-ghost" id="fbConfigBtn" title="Configurar Firebase">⚙️</button>
+    </div>
+    <div id="statusPill">
+        <span class="dot"></span>
+        <span id="statusText">Sin sala</span>
+    </div>
+</div>
+
+<!-- MAP -->
+<div id="map"></div>
+
+<!-- INFO BAR -->
+<div id="infoBar">
+    <div class="ii">📡 Sala: <strong id="salaLabel">—</strong></div>
+    <div class="ii">🎯 GPS: <strong id="accuracyLabel">—</strong></div>
+    <div class="ii">👤 Otro: <strong id="otherLabel">—</strong></div>
+    <div class="ii">📏 Dist: <span id="distancia">—</span></div>
+    <div class="ii" id="fbStatusLabel" style="margin-left:auto; color:var(--muted)">🔌 Firebase: no configurado</div>
+</div>
+
+<!-- FIREBASE CONFIG MODAL -->
+<div id="fbModal">
+    <div class="modal-box">
+        <h2>⚙ Configurar Firebase</h2>
+        <p style="color:var(--muted);font-size:.75rem;line-height:1.5">Ingresa los datos de tu proyecto Firebase para activar el modo multi-dispositivo en tiempo real.</p>
+        <label>API Key</label>
+        <input type="text" id="fb_apiKey" placeholder="AIzaSy...">
+        <label>Auth Domain</label>
+        <input type="text" id="fb_authDomain" placeholder="proyecto.firebaseapp.com">
+        <label>Database URL</label>
+        <input type="text" id="fb_dbUrl" placeholder="https://proyecto-default-rtdb.firebaseio.com">
+        <label>Project ID</label>
+        <input type="text" id="fb_projectId" placeholder="mi-proyecto">
+        <div class="modal-actions">
+            <button class="btn btn-ghost" id="fbCancelBtn">Cancelar</button>
+            <button class="btn btn-primary" id="fbSaveBtn">Guardar y conectar</button>
+        </div>
+        <p class="note">
+            Sin Firebase, la app funciona en <strong>modo local</strong> (solo un dispositivo, sin sincronización).<br>
+            Crea tu proyecto gratis en <a href="https://console.firebase.google.com" target="_blank">console.firebase.google.com</a>
+        </p>
+    </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script type="module">
+// ══════════════════════════════════════════════
+//  ESTADO GLOBAL
+// ══════════════════════════════════════════════
+const MY_UID = sessionStorage.getItem('gps_uid') || (() => {
+    const id = 'u' + Math.random().toString(36).slice(2,10);
+    sessionStorage.setItem('gps_uid', id);
+    return id;
+})();
+
+let map, myMarker, myCircle;
+let otherMarkers = {};
+let currentRoom  = null;
+let watchId      = null;
+let myLat = null, myLng = null;
+
+// Firebase state
+let db = null;
+let myUserRef = null;
+let roomListenerRef = null;
+
+// ══════════════════════════════════════════════
+//  MAPA
+// ══════════════════════════════════════════════
+function initMap() {
+    map = L.map('map', { zoomControl: true }).setView([-33.45, -70.65], 13);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19
+    }).addTo(map);
+}
+
+function makeIcon(emoji, cls) {
+    return L.divIcon({
+        html: `<div class="${cls}">${emoji}</div>`,
+        className: '', iconSize:[32,32], iconAnchor:[16,16], popupAnchor:[0,-18]
+    });
+}
+
+// ══════════════════════════════════════════════
+//  FIREBASE — carga dinámica
+// ══════════════════════════════════════════════
+async function initFirebase(cfg) {
+    try {
+        const { initializeApp, getApps, deleteApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
+        const { getDatabase, ref, set, update, onValue, off, onDisconnect } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
+
+        // Limpiar app anterior si existe
+        const apps = getApps();
+        if (apps.length) await deleteApp(apps[0]);
+
+        const app = initializeApp(cfg);
+        const database = getDatabase(app);
+
+        db = { database, ref, set, update, onValue, off, onDisconnect };
+        document.getElementById('fbStatusLabel').textContent = '🟢 Firebase: conectado';
+        document.getElementById('fbStatusLabel').style.color = 'var(--green)';
+        showToast('✅ Firebase conectado');
+        return true;
+    } catch(e) {
+        console.error('Firebase init error:', e);
+        showToast('❌ Error Firebase: ' + e.message);
+        return false;
+    }
+}
+
+// ══════════════════════════════════════════════
+//  SALA
+// ══════════════════════════════════════════════
+function joinRoom(room) {
+    // Limpiar sala anterior
+    if (roomListenerRef && db) {
+        db.off(roomListenerRef);
+    }
+    clearOtherMarkers();
+
+    currentRoom = room.toUpperCase();
+    document.getElementById('salaLabel').textContent = currentRoom;
+    setStatus('waiting', `Sala ${currentRoom}`);
+
+    if (!db) {
+        showToast('⚠ Modo local — configura Firebase para multi-dispositivo');
+        return;
+    }
+
+    roomListenerRef = db.ref(db.database, `rooms/${currentRoom}/users`);
+    db.onValue(roomListenerRef, (snapshot) => {
+        const users = snapshot.val() || {};
+
+        // Limpiar marcadores que ya no están
+        for (const uid in otherMarkers) {
+            if (!users[uid]) removeOtherMarker(uid);
+        }
+
+        let others = 0;
+        for (const uid in users) {
+            if (uid === MY_UID) continue;
+            const u = users[uid];
+            if (!u.lat || !u.lng) continue;
+            others++;
+
+            if (!otherMarkers[uid]) {
+                const marker = L.marker([u.lat,u.lng], { icon: makeIcon('🚗','other-icon') }).addTo(map);
+                marker.bindPopup(`<strong>👤 Usuario</strong><br>±${Math.round(u.accuracy||0)}m`);
+                const circle = L.circle([u.lat,u.lng], {
+                    radius: u.accuracy||50, color:'#F26522',
+                    fillColor:'#F26522', fillOpacity:.08, weight:1
+                }).addTo(map);
+                otherMarkers[uid] = { marker, circle };
+            } else {
+                otherMarkers[uid].marker.setLatLng([u.lat,u.lng]);
+                otherMarkers[uid].circle.setLatLng([u.lat,u.lng]);
+                if (u.accuracy) otherMarkers[uid].circle.setRadius(u.accuracy);
+            }
+
+            if (myLat !== null) {
+                const dist = haversine(myLat, myLng, u.lat, u.lng);
+                document.getElementById('distancia').textContent = fmtDist(dist);
+                document.getElementById('otherLabel').textContent = `online · ±${Math.round(u.accuracy||0)}m`;
+            }
+        }
+
+        if (!others) {
+            document.getElementById('otherLabel').textContent = 'esperando…';
+            document.getElementById('distancia').textContent = '—';
+            setStatus('waiting', `Sala ${currentRoom} · esperando`);
+        } else {
+            setStatus('active', `Sala ${currentRoom} · ${others+1} usuarios`);
+        }
+    });
+}
+
+// ══════════════════════════════════════════════
+//  GPS
+// ══════════════════════════════════════════════
+function startSharing(room) {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+
+    if (!navigator.geolocation) {
+        showToast('❌ GPS no disponible en este dispositivo');
+        return;
+    }
+
+    watchId = navigator.geolocation.watchPosition((pos) => {
+        myLat = pos.coords.latitude;
+        myLng = pos.coords.longitude;
+        const acc = pos.coords.accuracy;
+
+        document.getElementById('accuracyLabel').textContent = `±${Math.round(acc)}m`;
+
+        // Publicar en Firebase si está disponible
+        if (db) {
+            myUserRef = db.ref(db.database, `rooms/${room}/users/${MY_UID}`);
+            db.onDisconnect(myUserRef).remove();
+            db.update(myUserRef, { lat:myLat, lng:myLng, accuracy:acc, ts:Date.now() });
+        }
+
+        // Marcador propio
+        if (!myMarker) {
+            myMarker = L.marker([myLat,myLng], {
+                icon: makeIcon('📍','my-icon'), zIndexOffset:100
+            }).addTo(map);
+            myMarker.bindPopup('<strong>📍 Tú</strong>');
+            myCircle = L.circle([myLat,myLng], {
+                radius:acc, color:'#00e5a0',
+                fillColor:'#00e5a0', fillOpacity:.08, weight:1
+            }).addTo(map);
+            map.setView([myLat,myLng], 16);
+        } else {
+            myMarker.setLatLng([myLat,myLng]);
+            myCircle.setLatLng([myLat,myLng]);
+            myCircle.setRadius(acc);
+        }
+
+        // Recalcular distancias
+        for (const uid in otherMarkers) {
+            const ll = otherMarkers[uid].marker.getLatLng();
+            document.getElementById('distancia').textContent = fmtDist(haversine(myLat,myLng,ll.lat,ll.lng));
+        }
+    }, (err) => {
+        console.warn('GPS:', err);
+        showToast('⚠ GPS: ' + err.message);
+    }, { enableHighAccuracy:true, timeout:12000, maximumAge:0 });
+}
+
+// ══════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════
+function clearOtherMarkers() {
+    for (const uid in otherMarkers) removeOtherMarker(uid);
+}
+function removeOtherMarker(uid) {
+    if (otherMarkers[uid]) {
+        map.removeLayer(otherMarkers[uid].marker);
+        map.removeLayer(otherMarkers[uid].circle);
+        delete otherMarkers[uid];
+    }
+}
+function haversine(la1,ln1,la2,ln2) {
+    const R=6371000, d2r=Math.PI/180;
+    const dLa=(la2-la1)*d2r, dLn=(ln2-ln1)*d2r;
+    const a=Math.sin(dLa/2)**2 + Math.cos(la1*d2r)*Math.cos(la2*d2r)*Math.sin(dLn/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function fmtDist(m) { return m<1000 ? `${Math.round(m)} m` : `${(m/1000).toFixed(2)} km`; }
+function genCode() {
+    const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    return Array.from({length:6},()=>c[Math.floor(Math.random()*c.length)]).join('');
+}
+function setStatus(type, text) {
+    const pill = document.getElementById('statusPill');
+    document.getElementById('statusText').textContent = text;
+    pill.className = type;
+    pill.querySelector('.dot').className = 'dot' + (type ? ' pulse' : '');
+}
+let _tt;
+function showToast(msg) {
+    const t=document.getElementById('toast');
+    t.textContent=msg; t.classList.add('show');
+    clearTimeout(_tt); _tt=setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+// ══════════════════════════════════════════════
+//  FIREBASE MODAL
+// ══════════════════════════════════════════════
+function openFbModal() {
+    // Pre-rellenar si hay config guardada
+    const saved = JSON.parse(localStorage.getItem('gps_fb_cfg')||'{}');
+    if (saved.apiKey)     document.getElementById('fb_apiKey').value     = saved.apiKey;
+    if (saved.authDomain) document.getElementById('fb_authDomain').value = saved.authDomain;
+    if (saved.databaseURL)document.getElementById('fb_dbUrl').value      = saved.databaseURL;
+    if (saved.projectId)  document.getElementById('fb_projectId').value  = saved.projectId;
+    document.getElementById('fbModal').classList.add('show');
+}
+document.getElementById('fbConfigBtn').onclick = openFbModal;
+document.getElementById('fbCancelBtn').onclick = () => document.getElementById('fbModal').classList.remove('show');
+document.getElementById('fbSaveBtn').onclick = async () => {
+    const cfg = {
+        apiKey:        document.getElementById('fb_apiKey').value.trim(),
+        authDomain:    document.getElementById('fb_authDomain').value.trim(),
+        databaseURL:   document.getElementById('fb_dbUrl').value.trim(),
+        projectId:     document.getElementById('fb_projectId').value.trim(),
+        storageBucket: document.getElementById('fb_projectId').value.trim() + '.appspot.com',
+    };
+    if (!cfg.apiKey || !cfg.databaseURL) { showToast('⚠ Completa API Key y Database URL'); return; }
+    localStorage.setItem('gps_fb_cfg', JSON.stringify(cfg));
+    document.getElementById('fbModal').classList.remove('show');
+    const ok = await initFirebase(cfg);
+    if (ok && currentRoom) joinRoom(currentRoom); // reconectar sala
+};
+
+// ══════════════════════════════════════════════
+//  EVENTOS UI
+// ══════════════════════════════════════════════
+document.getElementById('crearBtn').onclick = () => {
+    let room = document.getElementById('roomId').value.trim().toUpperCase();
+    if (!room) room = genCode();
+    document.getElementById('roomId').value = room;
+    joinRoom(room);
+    startSharing(room);
+    window.history.pushState({}, '', location.pathname + `?sala=${room}`);
+    showToast(`📡 Sala ${room} activa`);
+};
+
+document.getElementById('compartirBtn').onclick = () => {
+    if (!currentRoom) { showToast('Primero únete a una sala'); return; }
+    const url = location.href.split('?')[0] + `?sala=${currentRoom}`;
+    if (navigator.share) {
+        navigator.share({ title:'GPS Vivo', text:`Sala ${currentRoom}`, url });
+    } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(url).then(()=>showToast('🔗 Enlace copiado'));
+    } else {
+        prompt('Enlace:', url);
+    }
+};
+
+document.getElementById('roomId').addEventListener('keydown', e => {
+    if (e.key==='Enter') document.getElementById('crearBtn').click();
+});
+
+window.addEventListener('beforeunload', () => {
+    if (myUserRef && db) db.remove(myUserRef);
+    if (watchId!==null) navigator.geolocation.clearWatch(watchId);
+});
+
+// ══════════════════════════════════════════════
+//  BOOT
+// ══════════════════════════════════════════════
+async function boot() {
+    initMap();
+
+    // Restaurar config Firebase guardada
+    const saved = JSON.parse(localStorage.getItem('gps_fb_cfg')||'null');
+    if (saved?.apiKey && saved?.databaseURL) {
+        await initFirebase(saved);
+    }
+
+    // Sala desde URL
+    const sala = new URLSearchParams(location.search).get('sala');
+    if (sala && /^[A-Z0-9]{4,6}$/.test(sala.toUpperCase())) {
+        document.getElementById('roomId').value = sala.toUpperCase();
+        joinRoom(sala);
+        startSharing(sala);
+    }
+}
+
+boot();
+</script>
+</body>
+</html>
