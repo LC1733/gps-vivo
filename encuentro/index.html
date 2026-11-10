@@ -248,6 +248,11 @@
     const urlParams = new URLSearchParams(location.search);
     const invitedRoom = cleanRoom(urlParams.get("room"));
     if (invitedRoom) state.room = invitedRoom;
+    // Punto de encuentro incluido en el link de invitación: ?p=lat,lng,ts
+    const invitedPoint = (() => {
+      const [lat, lng, ts] = String(urlParams.get("p") || "").split(",").map(Number);
+      return isCoord(lat, lng) ? { lat, lng, by: urlParams.get("pb") || "Grupo", ts: ts || 1 } : null;
+    })();
     if (!DEFAULT_SUPABASE_URL && urlParams.get("sbu")) state.sbUrl = b64d(urlParams.get("sbu"));
     if (!DEFAULT_SUPABASE_KEY && urlParams.get("sbk")) state.sbKey = b64d(urlParams.get("sbk"));
 
@@ -473,7 +478,12 @@
       try { if ("wakeLock" in navigator && !document.hidden) state.wakeLock = await navigator.wakeLock.request("screen"); } catch {}
     }
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && state.started) { keepAwake(); send("hello", { id: state.myId }); }
+      if (!document.hidden && state.started) {
+        keepAwake();
+        send("hello", { id: state.myId });
+        send("gps_ping", myPayload());
+        if (state.meetPoint) send("meetpoint_update", { ...state.meetPoint, _sync: true });
+      }
     });
 
     /* ---------- tiempo real (Supabase Broadcast) ---------- */
@@ -560,6 +570,8 @@
     setInterval(() => {
       if (!state.started) return;
       send("gps_ping", myPayload());
+      // reenviar el punto periódicamente: así lo recibe quien entró mientras otros estaban en segundo plano
+      if (state.meetPoint) send("meetpoint_update", { ...state.meetPoint, _sync: true });
       renderAll(); // también limpia a quienes se desconectaron
     }, HEARTBEAT_MS);
 
@@ -625,6 +637,11 @@
       if (!state.room) { toast("Primero entra a una sala"); return; }
       const url = new URL(location.origin + location.pathname);
       url.searchParams.set("room", state.room);
+      if (state.meetPoint) {
+        const m = state.meetPoint;
+        url.searchParams.set("p", `${m.lat.toFixed(6)},${m.lng.toFixed(6)},${m.ts}`);
+        url.searchParams.set("pb", m.by);
+      }
       if (!DEFAULT_SUPABASE_URL && state.sbUrl && state.sbKey) {
         url.searchParams.set("sbu", b64e(state.sbUrl));
         url.searchParams.set("sbk", b64e(state.sbKey));
@@ -692,6 +709,9 @@
       if (roomChanged) {
         state.meetPoint = null;
         if (meetMarker) { map.removeLayer(meetMarker); meetMarker = null; }
+        if (invitedPoint && room === invitedRoom) {
+          setMeetingPoint(invitedPoint.lat, invitedPoint.lng, invitedPoint.by, invitedPoint.ts, false);
+        }
         connectRealtimeRoom();
       } else {
         send("gps_ping", myPayload());
