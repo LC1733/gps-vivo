@@ -70,8 +70,8 @@
         </div>
         <div class="grid grid-cols-2 gap-2">
           <div>
-            <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Sala</label>
-            <input id="inputRoom" type="text" maxlength="24" placeholder="Se crea sola" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-blue-500" />
+            <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Nombre sala</label>
+            <input id="inputRoom" type="text" maxlength="24" placeholder="Opcional" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-blue-500" />
           </div>
           <div>
             <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Transporte</label>
@@ -99,8 +99,11 @@
       <button id="btnStartApp" class="w-full py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:scale-[0.99] font-extrabold text-sm text-white shadow-lg transition">
         Activar mi GPS y entrar
       </button>
+      <button id="btnNewRoom" class="hidden w-full py-2.5 rounded-2xl bg-slate-800 border border-slate-700 font-bold text-xs text-slate-200">
+        ➕ Crear una sala nueva (privada)
+      </button>
       <p class="text-[10px] text-slate-500 leading-snug">
-        Tu ubicación solo se transmite a quienes estén en la misma sala mientras tengas esta página abierta. No se guarda en ninguna base de datos.
+        🔒 Cifrado de extremo a extremo: ubicación, punto y mensajes viajan cifrados con una clave que solo está en el link de invitación. Nada se guarda en ninguna base de datos.
       </p>
     </div>
   </div>
@@ -241,21 +244,49 @@
       channel: null,
       connected: false,
       wakeLock: null,
-      leaving: false
+      leaving: false,
+      roomKey: "",          // clave secreta de la sala (solo en el #)
+      connectedKey: "",
+      cryptoKey: null,
+      channelId: ""
     };
     try { sessionStorage.setItem("enc_myId", state.myId); } catch {}
     ls.set("enc_myColor", state.myColor);
 
-    const urlParams = new URLSearchParams(location.search);
-    const invitedRoom = cleanRoom(urlParams.get("room"));
-    if (invitedRoom) state.room = invitedRoom;
-    // Punto de encuentro incluido en el link de invitación: ?p=lat,lng,ts
+    /* ---------- cifrado de extremo a extremo (AES-GCM 256) ----------
+     * La clave de la sala vive SOLO en la parte del link después de "#".
+     * Esa parte nunca se envía a GitHub ni a Supabase: el servidor solo
+     * retransmite datos cifrados que no puede leer.                      */
+    function b64u(bytes) {
+      let str = ""; bytes.forEach((b) => (str += String.fromCharCode(b)));
+      return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+    function unb64u(t) {
+      const norm = t.replace(/-/g, "+").replace(/_/g, "/");
+      const bin = atob(norm + "=".repeat((4 - (norm.length % 4)) % 4));
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    }
+    function newRoomKey() { return b64u(crypto.getRandomValues(new Uint8Array(32))); }
+    async function prepareKey(k) {
+      state.cryptoKey = await crypto.subtle.importKey("raw", unb64u(k), "AES-GCM", false, ["encrypt", "decrypt"]);
+      // nombre del canal derivado de la clave: el servidor no puede deducir la clave ni el nombre de la sala
+      const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("encuentro-canal:" + k)));
+      state.channelId = Array.from(h.slice(0, 12), (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    const KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+
+    const hashParams = new URLSearchParams(location.hash.slice(1));
+    const invitedKey = KEY_RE.test(hashParams.get("k") || "") ? hashParams.get("k") : "";
+    const invitedRoom = invitedKey ? (cleanRoom(hashParams.get("r")) || "sala") : "";
+    if (invitedKey) { state.roomKey = invitedKey; state.room = invitedRoom; }
+    const legacyLink = !invitedKey && new URLSearchParams(location.search).has("room");
+    // Punto de encuentro incluido en el link de invitación (también cifrado por estar en el #)
     const invitedPoint = (() => {
-      const [lat, lng, ts] = String(urlParams.get("p") || "").split(",").map(Number);
-      return isCoord(lat, lng) ? { lat, lng, by: urlParams.get("pb") || "Grupo", ts: ts || 1 } : null;
+      const [lat, lng, ts] = String(hashParams.get("p") || "").split(",").map(Number);
+      return isCoord(lat, lng) ? { lat, lng, by: hashParams.get("pb") || "Grupo", ts: ts || 1 } : null;
     })();
-    if (!DEFAULT_SUPABASE_URL && urlParams.get("sbu")) state.sbUrl = b64d(urlParams.get("sbu"));
-    if (!DEFAULT_SUPABASE_KEY && urlParams.get("sbk")) state.sbKey = b64d(urlParams.get("sbk"));
+    // Abrir otro link de invitación con la página ya abierta: recargar limpio
+    window.addEventListener("hashchange", () => location.reload());
 
     /* ---------- mapa ---------- */
     const map = L.map("map", { zoomControl: false, tapHold: true }).setView([-33.4372, -70.6506], 13);
@@ -497,9 +528,14 @@
       };
     }
     function send(event, payload) {
-      if (!state.channel || !state.connected || !payload) return;
+      if (!state.channel || !state.connected || !payload || !state.cryptoKey) return;
       if (state.leaving && event !== "bye") return;
-      state.channel.send({ type: "broadcast", event, payload }).catch?.(() => {});
+      const ch = state.channel, key = state.cryptoKey;
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const data = new TextEncoder().encode(JSON.stringify({ e: event, d: payload }));
+      crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data)
+        .then((ct) => ch.send({ type: "broadcast", event: "m", payload: { iv: b64u(iv), ct: b64u(new Uint8Array(ct)) } }))
+        .catch(() => {});
     }
 
     async function connectRealtimeRoom() {
@@ -519,17 +555,10 @@
         state.connected = false;
         Object.keys(state.peers).forEach(removePerson);
 
-        const channel = state.client.channel(`encuentro_${state.room}`, {
-          config: { broadcast: { self: false }, presence: { key: state.myId } }
-        });
-
-        channel
-          // Presence: el servidor avisa cuando la conexión de alguien se cierra, aunque su teléfono no alcance a despedirse
-          .on("presence", { event: "leave" }, ({ key }) => {
-            if (key && key !== state.myId) { removePerson(String(key)); renderAll(); }
-          })
-          .on("broadcast", { event: "gps_ping" }, ({ payload: p }) => {
-            if (!p || p.id === state.myId || typeof p.id !== "string" || !isCoord(p.lat, p.lng)) return;
+        const roomKey = state.cryptoKey;
+        const handlers = {
+          gps_ping: (p) => {
+            if (p.id === state.myId || typeof p.id !== "string" || !isCoord(p.lat, p.lng)) return;
             const id = p.id.slice(0, 24);
             state.peers[id] = {
               id, name: cleanName(p.name), color: safeColor(p.color),
@@ -538,20 +567,37 @@
               arrived: !!p.arrived, away: !!p.away, lastSeen: Date.now()
             };
             renderAll();
-          })
-          .on("broadcast", { event: "meetpoint_update" }, ({ payload }) => acceptRemoteMeetPoint(payload))
-          .on("broadcast", { event: "hello" }, () => {
+          },
+          meetpoint_update: (p) => acceptRemoteMeetPoint(p),
+          hello: () => {
             // alguien entró: le mandamos nuestra posición y el punto actual
             send("gps_ping", myPayload());
             if (state.meetPoint) send("meetpoint_update", { ...state.meetPoint, _sync: true });
-          })
-          .on("broadcast", { event: "bye" }, ({ payload }) => {
-            if (payload?.id) { removePerson(String(payload.id)); renderAll(); }
-          })
-          .on("broadcast", { event: "chat_msg" }, ({ payload }) => {
-            if (!payload) return;
-            showChatMessage(cleanName(payload.sender), String(payload.text ?? "").slice(0, 120), safeColor(payload.color));
+          },
+          bye: (p) => { if (p.id) { removePerson(String(p.id)); renderAll(); } },
+          chat_msg: (p) => {
+            showChatMessage(cleanName(p.sender), String(p.text ?? "").slice(0, 120), safeColor(p.color));
             playAlertBeep();
+          }
+        };
+        const channel = state.client.channel(`enc_${state.channelId}`, {
+          config: { broadcast: { self: false }, presence: { key: state.myId } }
+        });
+
+        channel
+          // Presence: el servidor avisa cuando la conexión de alguien se cierra, aunque su teléfono no alcance a despedirse
+          .on("presence", { event: "leave" }, ({ key }) => {
+            if (key && key !== state.myId) { removePerson(String(key)); renderAll(); }
+          })
+          .on("broadcast", { event: "m" }, async ({ payload }) => {
+            let msg;
+            try {
+              const plain = await crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: unb64u(String(payload.iv)) }, roomKey, unb64u(String(payload.ct)));
+              msg = JSON.parse(new TextDecoder().decode(plain));
+            } catch { return; } // clave distinta o mensaje alterado: se ignora
+            const fn = handlers[msg && msg.e];
+            if (fn && msg.d) fn(msg.d);
           })
           .subscribe((status) => {
             if (status === "SUBSCRIBED") {
@@ -662,20 +708,16 @@
 
     $("btnShareLink").addEventListener("click", async () => {
       if (!state.room) { toast("Primero entra a una sala"); return; }
-      const url = new URL(location.origin + location.pathname);
-      url.searchParams.set("room", state.room);
+      if (!state.roomKey) { toast("Primero entra a una sala"); return; }
+      const h = new URLSearchParams({ k: state.roomKey, r: state.room });
       if (state.meetPoint) {
         const m = state.meetPoint;
-        url.searchParams.set("p", `${m.lat.toFixed(6)},${m.lng.toFixed(6)},${m.ts}`);
-        url.searchParams.set("pb", m.by);
+        h.set("p", `${m.lat.toFixed(6)},${m.lng.toFixed(6)},${m.ts}`);
+        h.set("pb", m.by);
       }
-      if (!DEFAULT_SUPABASE_URL && state.sbUrl && state.sbKey) {
-        url.searchParams.set("sbu", b64e(state.sbUrl));
-        url.searchParams.set("sbk", b64e(state.sbKey));
-      }
-      const shareUrl = url.toString();
+      const shareUrl = `${location.origin}${location.pathname}#${h.toString()}`;
       if (navigator.share) {
-        try { await navigator.share({ title: "Encuentro GPS", text: `Entra a la sala "${state.room}" para vernos en el mapa:`, url: shareUrl }); return; }
+        try { await navigator.share({ title: "Encuentro GPS", text: "Entra a nuestra sala privada para vernos en el mapa:", url: shareUrl }); return; }
         catch (e) { if (e && e.name === "AbortError") return; }
       }
       try { await navigator.clipboard.writeText(shareUrl); toast("🔗 Link copiado. Pégalo en WhatsApp."); }
@@ -697,16 +739,36 @@
     $("inputSbUrl").value = state.sbUrl;
     $("inputSbKey").value = state.sbKey;
     if (DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_KEY) $("supabaseDetails").classList.add("hidden");
-    if (invitedRoom) {
-      $("inviteNotice").textContent = `Te invitaron a la sala "${invitedRoom}". Escribe tu nombre y entra.`;
+    if (invitedKey) {
+      $("inviteNotice").textContent = `🔒 Te invitaron a la sala privada "${invitedRoom}". Escribe tu nombre y entra.`;
+      $("inviteNotice").classList.remove("hidden");
+    } else if (legacyLink) {
+      $("inviteNotice").textContent = "Este link es de una versión anterior. Pide a quien te invitó que te mande uno nuevo con 🔗 Invitar.";
       $("inviteNotice").classList.remove("hidden");
     }
+    if (!window.crypto?.subtle) {
+      $("inviteNotice").textContent = "⚠️ Este navegador no permite cifrado. Abre el link en Safari o Chrome actualizados.";
+      $("inviteNotice").classList.remove("hidden");
+    }
+    $("btnOpenConfig").addEventListener("click", () => {
+      if (state.connectedKey) $("btnNewRoom").classList.remove("hidden");
+    });
+    $("btnNewRoom").addEventListener("click", () => {
+      state.roomKey = newRoomKey();
+      state.room = "";
+      $("inputRoom").value = "";
+      $("btnStartApp").click();
+      toast("➕ Sala nueva creada. Toca 🔗 Invitar para sumar gente.");
+    });
     if (!state.sbUrl || !state.sbKey) $("supabaseDetails").open = true;
 
-    $("btnStartApp").addEventListener("click", () => {
+    $("btnStartApp").addEventListener("click", async () => {
+      if (!window.crypto?.subtle) { toast("⚠️ Navegador sin soporte de cifrado"); return; }
       const name = cleanName($("inputName").value) ;
-      const room = cleanRoom($("inputRoom").value) || randomRoom();
-      const roomChanged = room !== state.room || !state.channel;
+      const room = cleanRoom($("inputRoom").value) || state.room || randomRoom();
+      if (!state.roomKey) state.roomKey = newRoomKey();
+      const roomChanged = state.roomKey !== state.connectedKey;
+      if (roomChanged) { state.cryptoKey = null; state.connected = false; }
       state.myName = name;
       state.myTransport = $("inputTransport").value;
       state.room = room;
@@ -719,9 +781,9 @@
       if (state.sbKey) ls.set("enc_sbKey", state.sbKey);
 
       $("inputRoom").value = room;
-      $("roomTitle").textContent = `Sala: ${room}`;
+      $("roomTitle").textContent = `🔒 ${room}`;
       $("setupModal").classList.add("hidden");
-      history.replaceState(null, "", `${location.pathname}?room=${encodeURIComponent(room)}`);
+      history.replaceState(null, "", `${location.pathname}#${new URLSearchParams({ k: state.roomKey, r: room })}`);
 
       if ("Notification" in window && Notification.permission === "default") {
         try { Notification.requestPermission(); } catch {}
@@ -736,9 +798,13 @@
       if (roomChanged) {
         state.meetPoint = null;
         if (meetMarker) { map.removeLayer(meetMarker); meetMarker = null; }
-        if (invitedPoint && room === invitedRoom) {
+        Object.keys(state.peers).forEach(removePerson);
+        if (invitedPoint && state.roomKey === invitedKey) {
           setMeetingPoint(invitedPoint.lat, invitedPoint.lng, invitedPoint.by, invitedPoint.ts, false);
         }
+        state.connectedKey = state.roomKey;
+        try { await prepareKey(state.roomKey); }
+        catch { toast("⚠️ No se pudo preparar el cifrado"); return; }
         connectRealtimeRoom();
       } else {
         send("gps_ping", myPayload());
