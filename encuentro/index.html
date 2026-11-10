@@ -11,7 +11,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
 
   <style>
     html, body {
@@ -169,8 +169,9 @@
      * Si se completan estas dos constantes, nadie tiene que pegar llaves:
      * basta con abrir el link de la sala.
      ********************************************************************/
-    const DEFAULT_SUPABASE_URL = "";
-    const DEFAULT_SUPABASE_KEY = "";
+    // Llave pública (publishable): está pensada para ir en el navegador.
+    const DEFAULT_SUPABASE_URL = "https://xcbihvbscvmengwserbm.supabase.co";
+    const DEFAULT_SUPABASE_KEY = "sb_publishable_qRb9gKdBn_9gursSQbQuSw__eUVsfvm";
 
     const ARRIVE_M = 25;          // radio de llegada
     const NEAR_M = 100;           // aviso de proximidad
