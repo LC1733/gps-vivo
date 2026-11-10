@@ -175,7 +175,7 @@
 
     const ARRIVE_M = 25;          // radio de llegada
     const NEAR_M = 100;           // aviso de proximidad
-    const PEER_TIMEOUT_MS = 60000;// sin señal por 60 s => se quita del mapa
+    const PEER_TIMEOUT_MS = 30000;// respaldo: sin señal por 30 s => se quita del mapa
     const HEARTBEAT_MS = 5000;
 
     const SPEEDS = {
@@ -240,7 +240,8 @@
       client: null,
       channel: null,
       connected: false,
-      wakeLock: null
+      wakeLock: null,
+      leaving: false
     };
     try { sessionStorage.setItem("enc_myId", state.myId); } catch {}
     ls.set("enc_myColor", state.myColor);
@@ -346,9 +347,9 @@
 
     function updatePersonMarker(p, dist) {
       const t = SPEEDS[p.transport] || SPEEDS.pie;
-      const label = dist === null ? "GPS" : (p.arrived ? "✅" : fmtDist(dist));
+      const label = (dist === null ? "GPS" : (p.arrived ? "✅" : fmtDist(dist))) + (p.away ? " · ⏸" : "");
       const html = `
-        <div class="user-marker">
+        <div class="user-marker" style="opacity:${p.away ? 0.45 : 1}">
           <div class="user-dot" style="background:${safeColor(p.color)}">
             ${esc(p.name.charAt(0).toUpperCase())}
             <span class="user-badge">${t.icon}</span>
@@ -422,7 +423,7 @@
         const card = document.createElement("div");
         card.className = "shrink-0 w-40 rounded-2xl bg-slate-800 border border-slate-700 p-2.5 cursor-pointer";
         card.addEventListener("click", () => map.flyTo([p.lat, p.lng], 17, { duration: 0.6 }));
-        const status = !state.meetPoint
+        const status = p.away && !p.isMe ? "⏸ En pausa (app en segundo plano)" : !state.meetPoint
           ? `Precisión ±${Math.round(p.accuracy || 0)} m`
           : p.arrived ? "✅ En el punto" : `${fmtDist(dist)} · ~${eta} min`;
         card.innerHTML = `
@@ -491,11 +492,13 @@
       if (!state.myCoords) return null;
       return {
         id: state.myId, name: state.myName || "Amigo", color: state.myColor, transport: state.myTransport,
-        lat: state.myCoords.lat, lng: state.myCoords.lng, accuracy: state.myCoords.accuracy, arrived: state.myArrived
+        lat: state.myCoords.lat, lng: state.myCoords.lng, accuracy: state.myCoords.accuracy, arrived: state.myArrived,
+        away: document.hidden
       };
     }
     function send(event, payload) {
       if (!state.channel || !state.connected || !payload) return;
+      if (state.leaving && event !== "bye") return;
       state.channel.send({ type: "broadcast", event, payload }).catch?.(() => {});
     }
 
@@ -516,9 +519,15 @@
         state.connected = false;
         Object.keys(state.peers).forEach(removePerson);
 
-        const channel = state.client.channel(`encuentro_${state.room}`, { config: { broadcast: { self: false } } });
+        const channel = state.client.channel(`encuentro_${state.room}`, {
+          config: { broadcast: { self: false }, presence: { key: state.myId } }
+        });
 
         channel
+          // Presence: el servidor avisa cuando la conexión de alguien se cierra, aunque su teléfono no alcance a despedirse
+          .on("presence", { event: "leave" }, ({ key }) => {
+            if (key && key !== state.myId) { removePerson(String(key)); renderAll(); }
+          })
           .on("broadcast", { event: "gps_ping" }, ({ payload: p }) => {
             if (!p || p.id === state.myId || typeof p.id !== "string" || !isCoord(p.lat, p.lng)) return;
             const id = p.id.slice(0, 24);
@@ -526,7 +535,7 @@
               id, name: cleanName(p.name), color: safeColor(p.color),
               transport: SPEEDS[p.transport] ? p.transport : "pie",
               lat: p.lat, lng: p.lng, accuracy: Number(p.accuracy) || 0,
-              arrived: !!p.arrived, lastSeen: Date.now()
+              arrived: !!p.arrived, away: !!p.away, lastSeen: Date.now()
             };
             renderAll();
           })
@@ -550,6 +559,7 @@
               $("statusDot").className = "h-3 w-3 rounded-full bg-emerald-400 shrink-0";
               send("hello", { id: state.myId });
               send("gps_ping", myPayload());
+              try { channel.track({ id: state.myId }); } catch {}
               toast("Conectado a la sala");
             } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
               state.connected = false;
@@ -575,7 +585,24 @@
       renderAll(); // también limpia a quienes se desconectaron
     }, HEARTBEAT_MS);
 
-    window.addEventListener("pagehide", () => send("bye", { id: state.myId }));
+    window.addEventListener("pagehide", () => {
+      send("bye", { id: state.myId });
+      state.leaving = true; // nada más después del "adiós", para no reaparecer en los demás
+      try { state.channel?.untrack(); } catch {}
+    });
+    // Si el navegador restaura la página desde caché, volver a anunciarse
+    window.addEventListener("pageshow", (e) => {
+      if (e.persisted && state.started) {
+        state.leaving = false;
+        try { state.channel?.track({ id: state.myId }); } catch {}
+        send("hello", { id: state.myId });
+        send("gps_ping", myPayload());
+      }
+    });
+    // Al pasar a segundo plano, avisar de inmediato que quedo "en pausa"
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden && state.started) send("gps_ping", myPayload());
+    });
 
     /* ---------- chat ---------- */
     function showChatMessage(sender, text, color) {
