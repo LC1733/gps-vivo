@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Encuentro GPS — En Vivo</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100dvh; overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a; color: #f8fafc;
+      -webkit-user-select: none; user-select: none;
+    }
+    body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+    input, select { -webkit-user-select: text; user-select: text; }
+    #map { width: 100%; height: 100%; z-index: 1; }
+    .user-marker { display: flex; flex-direction: column; align-items: center; width: 120px; }
+    .user-dot {
+      width: 40px; height: 40px; border-radius: 9999px; border: 3px solid #fff;
+      display: grid; place-items: center; font-weight: 900; font-size: 15px; color: #fff;
+      box-shadow: 0 6px 16px rgba(0,0,0,.35); position: relative;
+    }
+    .user-badge {
+      position: absolute; bottom: -4px; right: -4px; background: #fff; border-radius: 9999px;
+      width: 20px; height: 20px; display: grid; place-items: center; font-size: 11px;
+      box-shadow: 0 2px 5px rgba(0,0,0,.25);
+    }
+    .user-label {
+      margin-top: 3px; background: rgba(17,24,39,.92); color: #fff; font-size: 11px; font-weight: 800;
+      padding: 2px 7px; border-radius: 9999px; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.3);
+      max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+    }
+    .meet-pin {
+      width: 46px; height: 46px; border-radius: 9999px; background: #ff5a1f; border: 4px solid #fff;
+      color: #fff; display: grid; place-items: center; font-size: 22px; font-weight: 900;
+      box-shadow: 0 8px 20px rgba(255,90,31,.55); animation: pulsePin 2s infinite;
+    }
+    @keyframes pulsePin { 0%,100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+    #toast { transition: opacity .25s, transform .25s; }
+  </style>
+</head>
+<body class="flex flex-col h-full w-full relative">
+
+  <!-- MODAL DE INGRESO -->
+  <div id="setupModal" class="fixed inset-0 z-[1000] bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4">
+      <div class="flex items-center gap-3">
+        <div class="h-11 w-11 rounded-2xl bg-blue-600 grid place-items-center text-xl">📍</div>
+        <div>
+          <h1 class="text-xl font-black leading-none">Encuentro GPS</h1>
+          <p class="text-xs text-slate-400 mt-1">Ubicación en vivo para juntarse</p>
+        </div>
+      </div>
+
+      <div id="inviteNotice" class="hidden text-xs bg-blue-600/15 border border-blue-500/40 text-blue-200 rounded-xl px-3 py-2"></div>
+
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Tu nombre</label>
+          <input id="inputName" type="text" maxlength="16" placeholder="Ej. Carlos" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-blue-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Sala</label>
+            <input id="inputRoom" type="text" maxlength="24" placeholder="Se crea sola" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-blue-500" />
+          </div>
+          <div>
+            <label class="block text-xs font-bold uppercase text-slate-400 mb-1">Transporte</label>
+            <select id="inputTransport" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-blue-500">
+              <option value="pie">🚶 A pie</option>
+              <option value="bici">🚲 Bici</option>
+              <option value="bus">🚌 Bus</option>
+              <option value="auto">🚗 Auto</option>
+            </select>
+          </div>
+        </div>
+
+        <details id="supabaseDetails" class="bg-slate-800/60 border border-slate-700/80 rounded-2xl p-3">
+          <summary class="text-xs font-extrabold text-blue-400 cursor-pointer">⚙️ Conexión Supabase (solo el organizador)</summary>
+          <p class="text-[11px] text-slate-400 mt-1.5 leading-snug">
+            Project URL y llave anon/public de Supabase. Quien entra por un link de invitación no necesita llenar esto.
+          </p>
+          <div class="space-y-2 mt-2">
+            <input id="inputSbUrl" type="url" placeholder="https://xxxx.supabase.co" class="w-full rounded-lg bg-slate-900 border border-slate-700 px-2.5 py-2 text-xs text-white" />
+            <input id="inputSbKey" type="text" placeholder="eyJhbGciOi..." class="w-full rounded-lg bg-slate-900 border border-slate-700 px-2.5 py-2 text-xs text-white" />
+          </div>
+        </details>
+      </div>
+
+      <button id="btnStartApp" class="w-full py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:scale-[0.99] font-extrabold text-sm text-white shadow-lg transition">
+        Activar mi GPS y entrar
+      </button>
+      <p class="text-[10px] text-slate-500 leading-snug">
+        Tu ubicación solo se transmite a quienes estén en la misma sala mientras tengas esta página abierta. No se guarda en ninguna base de datos.
+      </p>
+    </div>
+  </div>
+
+  <!-- BARRA SUPERIOR -->
+  <header class="z-20 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-3.5 py-2.5 flex items-center justify-between gap-2">
+    <div class="flex items-center gap-2 min-w-0">
+      <span id="statusDot" class="h-3 w-3 rounded-full bg-amber-400 shrink-0 animate-pulse"></span>
+      <div class="min-w-0">
+        <div class="flex items-center gap-1.5">
+          <h2 id="roomTitle" class="text-sm font-black truncate">Sala: —</h2>
+          <span id="onlineCount" class="text-[11px] font-extrabold bg-slate-800 text-blue-400 px-2 py-0.5 rounded-full shrink-0">0 en mapa</span>
+        </div>
+        <p id="gpsStatusText" class="text-[11px] text-slate-400 truncate">Esperando señal GPS...</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5 shrink-0">
+      <button id="btnShareLink" class="px-3 py-2 rounded-xl bg-blue-600 text-xs font-extrabold text-white shadow">🔗 Invitar</button>
+      <button id="btnOpenConfig" class="p-2 rounded-xl bg-slate-800 text-xs font-bold text-slate-300" title="Cambiar sala o conexión">⚙️</button>
+    </div>
+  </header>
+
+  <!-- BANNER 100 m -->
+  <div id="proximityBanner" class="hidden z-30 bg-orange-600 text-white px-4 py-2.5 text-xs font-extrabold flex items-center justify-between shadow-lg">
+    <span id="proximityText"></span>
+    <button id="btnCloseBanner" class="ml-2 bg-black/20 rounded-full px-2 py-0.5">✕</button>
+  </div>
+
+  <!-- MAPA -->
+  <div class="relative flex-1 w-full overflow-hidden">
+    <div id="map"></div>
+    <div class="absolute top-3 right-3 z-[500] flex flex-col gap-2">
+      <button id="btnCenterMe" class="h-11 w-11 rounded-2xl bg-slate-900/90 border border-slate-700 text-white shadow-xl grid place-items-center text-lg" title="Centrar en mí">🎯</button>
+      <button id="btnFitAll" class="h-11 w-11 rounded-2xl bg-slate-900/90 border border-slate-700 text-white shadow-xl grid place-items-center text-lg" title="Ver a todos">👥</button>
+      <button id="btnMidpoint" class="h-11 w-11 rounded-2xl bg-orange-600 border border-orange-400 text-white shadow-xl grid place-items-center text-lg" title="Punto medio entre todos">⚖️</button>
+      <button id="btnVoiceStatus" class="h-11 w-11 rounded-2xl bg-slate-900/90 border border-slate-700 text-white shadow-xl grid place-items-center text-lg" title="Escuchar distancias">🔊</button>
+    </div>
+    <div class="pointer-events-none absolute top-3 left-3 z-[500] bg-slate-900/85 backdrop-blur border border-slate-800 rounded-2xl px-3 py-2 max-w-[210px]">
+      <p class="text-[11px] font-bold text-slate-200 leading-tight">
+        👆 <span class="text-orange-400">Mantén presionado</span> el mapa para fijar el punto de encuentro del grupo.
+      </p>
+    </div>
+    <div id="toast" class="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-[600] bg-slate-900/95 border border-slate-700 text-xs font-bold text-white px-3 py-2 rounded-xl opacity-0 whitespace-nowrap"></div>
+  </div>
+
+  <!-- PANEL INFERIOR -->
+  <section class="z-20 bg-slate-900 border-t border-slate-800 px-3.5 pt-3 pb-4 space-y-2.5">
+    <div class="flex items-center justify-between gap-2 bg-slate-800/90 rounded-2xl px-3.5 py-2.5">
+      <div class="min-w-0">
+        <p class="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Hacia el punto ★ (línea recta)</p>
+        <p id="summaryHeadline" class="text-sm font-black text-white mt-0.5 truncate">Mantén presionado el mapa para elegir dónde verse</p>
+      </div>
+      <button id="btnTogglePrivacy" class="shrink-0 px-2.5 py-1.5 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-extrabold">🛡️ Apagar al llegar: ON</button>
+    </div>
+    <div id="participantsList" class="flex gap-2 overflow-x-auto pb-1"></div>
+    <form id="chatForm" class="flex gap-2">
+      <input id="chatInput" type="text" maxlength="120" placeholder="Mensaje al grupo (ej. Estoy en la esquina)" class="flex-1 min-w-0 rounded-xl bg-slate-800 border border-slate-700 px-3 py-2 text-xs font-semibold text-white outline-none focus:border-blue-500" />
+      <button type="submit" class="px-4 py-2 rounded-xl bg-blue-600 font-extrabold text-xs text-white shrink-0">Enviar</button>
+    </form>
+    <div id="lastChatMsg" class="hidden text-xs bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-1.5 text-slate-200 truncate"></div>
+  </section>
+
+  <script>
+    /********************************************************************
+     * CONFIGURACIÓN
+     * Si se completan estas dos constantes, nadie tiene que pegar llaves:
+     * basta con abrir el link de la sala.
+     ********************************************************************/
+    const DEFAULT_SUPABASE_URL = "";
+    const DEFAULT_SUPABASE_KEY = "";
+
+    const ARRIVE_M = 25;          // radio de llegada
+    const NEAR_M = 100;           // aviso de proximidad
+    const PEER_TIMEOUT_MS = 60000;// sin señal por 60 s => se quita del mapa
+    const HEARTBEAT_MS = 5000;
+
+    const SPEEDS = {
+      pie:  { icon: "🚶", mps: 1.4 },
+      bici: { icon: "🚲", mps: 4.2 },
+      bus:  { icon: "🚌", mps: 6.9 },
+      auto: { icon: "🚗", mps: 11.1 }
+    };
+    const COLORS = ["#2563EB", "#F97316", "#16A34A", "#DB2777", "#7C3AED", "#0891B2", "#DC2626", "#D97706"];
+
+    /* ---------- utilidades seguras ---------- */
+    const $ = (id) => document.getElementById(id);
+    const ls = {
+      get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+      set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+    };
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    function cleanName(s) { return String(s ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 16) || "Amigo"; }
+    function safeColor(c) { return /^#[0-9a-f]{6}$/i.test(c) ? c : "#64748b"; }
+    function isCoord(lat, lng) {
+      return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+    }
+    function cleanRoom(s) {
+      return String(s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+    }
+    function randomRoom() {
+      const c = "abcdefghjkmnpqrstuvwxyz23456789";
+      return Array.from({ length: 6 }, () => c[Math.floor(Math.random() * c.length)]).join("");
+    }
+    function b64e(s) { try { return btoa(s); } catch { return ""; } }
+    function b64d(s) { try { return atob(s); } catch { return ""; } }
+    let toastT;
+    function toast(msg) {
+      const t = $("toast");
+      t.textContent = msg;
+      t.style.opacity = "1";
+      clearTimeout(toastT);
+      toastT = setTimeout(() => (t.style.opacity = "0"), 2600);
+    }
+    function fmtDist(m) { return m < 1000 ? `${m} m` : `${(m / 1000).toFixed(1)} km`; }
+
+    /* ---------- estado ---------- */
+    const state = {
+      myId: (() => { try { return sessionStorage.getItem("enc_myId"); } catch { return null; } })() || ("u_" + Math.random().toString(36).slice(2, 10)),
+      myName: ls.get("enc_myName") || "",
+      myColor: ls.get("enc_myColor") || COLORS[Math.floor(Math.random() * COLORS.length)],
+      myTransport: ls.get("enc_myTransport") || "pie",
+      room: "",
+      sbUrl: DEFAULT_SUPABASE_URL || ls.get("enc_sbUrl") || "",
+      sbKey: DEFAULT_SUPABASE_KEY || ls.get("enc_sbKey") || "",
+      autoStopPrivacy: true,
+      started: false,
+      myCoords: null,
+      myArrived: false,
+      meetPoint: null,          // { lat, lng, by, ts }
+      peers: {},
+      notifiedNear: new Set(),
+      watchId: null,
+      client: null,
+      channel: null,
+      connected: false,
+      wakeLock: null
+    };
+    try { sessionStorage.setItem("enc_myId", state.myId); } catch {}
+    ls.set("enc_myColor", state.myColor);
+
+    const urlParams = new URLSearchParams(location.search);
+    const invitedRoom = cleanRoom(urlParams.get("room"));
+    if (invitedRoom) state.room = invitedRoom;
+    if (!DEFAULT_SUPABASE_URL && urlParams.get("sbu")) state.sbUrl = b64d(urlParams.get("sbu"));
+    if (!DEFAULT_SUPABASE_KEY && urlParams.get("sbk")) state.sbKey = b64d(urlParams.get("sbk"));
+
+    /* ---------- mapa ---------- */
+    const map = L.map("map", { zoomControl: false, tapHold: true }).setView([-33.4372, -70.6506], 13);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "© OpenStreetMap"
+    }).addTo(map);
+
+    const markers = {};
+    const routeLines = {};
+    let meetMarker = null;
+
+    // Fijar punto con pulsación larga (evita moverlo por error al arrastrar el mapa)
+    map.on("contextmenu", (e) => {
+      if (!state.started) return;
+      setMeetingPoint(e.latlng.lat, e.latlng.lng, state.myName, Date.now(), true);
+      toast("★ Punto de encuentro actualizado para todos");
+    });
+
+    function distanceMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000, r = Math.PI / 180;
+      const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+      return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+    }
+
+    /* ---------- alertas ---------- */
+    let audioCtx = null;
+    function playAlertBeep() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        audioCtx = audioCtx || new Ctx();
+        const ctx = audioCtx;
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.type = "sine"; osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.36);
+      } catch {}
+      try { navigator.vibrate?.([100, 50, 100]); } catch {}
+    }
+    function nearAlert(name, dist) {
+      $("proximityText").textContent = `🔔 ${name} está a ${dist} m del punto de encuentro`;
+      $("proximityBanner").classList.remove("hidden");
+      playAlertBeep();
+      if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+        try { new Notification(`${name} está a ${dist} m`, { body: "Casi llega al punto de encuentro." }); } catch {}
+      }
+    }
+    $("btnCloseBanner").addEventListener("click", () => $("proximityBanner").classList.add("hidden"));
+
+    /* ---------- punto de encuentro ---------- */
+    function setMeetingPoint(lat, lng, by, ts, broadcast) {
+      if (!isCoord(lat, lng)) return;
+      const changed = !state.meetPoint || state.meetPoint.lat !== lat || state.meetPoint.lng !== lng;
+      state.meetPoint = { lat, lng, by: cleanName(by), ts: Number(ts) || Date.now() };
+
+      const icon = L.divIcon({ className: "", html: `<div class="meet-pin">★</div>`, iconSize: [46, 46], iconAnchor: [23, 23] });
+      if (!meetMarker) meetMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
+      else meetMarker.setLatLng([lat, lng]);
+
+      if (changed) {
+        // nuevo punto: reiniciar llegada y avisos, y reactivar GPS si se había apagado
+        state.notifiedNear.clear();
+        if (state.myArrived) {
+          state.myArrived = false;
+          if (state.started && state.watchId === null) startRealGPS();
+        }
+      }
+      if (broadcast) send("meetpoint_update", state.meetPoint);
+      renderAll();
+    }
+
+    function acceptRemoteMeetPoint(p) {
+      if (!p || !isCoord(p.lat, p.lng)) return;
+      const ts = Number(p.ts) || 0;
+      if (state.meetPoint && ts <= state.meetPoint.ts) return; // nos quedamos con el más reciente
+      setMeetingPoint(p.lat, p.lng, p.by, ts, false);
+      if (!p._sync) toast(`★ ${cleanName(p.by)} movió el punto de encuentro`);
+    }
+
+    /* ---------- marcadores ---------- */
+    function removePerson(id) {
+      if (markers[id]) { map.removeLayer(markers[id]); delete markers[id]; }
+      if (routeLines[id]) { map.removeLayer(routeLines[id]); delete routeLines[id]; }
+      delete state.peers[id];
+    }
+
+    function updatePersonMarker(p, dist) {
+      const t = SPEEDS[p.transport] || SPEEDS.pie;
+      const label = dist === null ? "GPS" : (p.arrived ? "✅" : fmtDist(dist));
+      const html = `
+        <div class="user-marker">
+          <div class="user-dot" style="background:${safeColor(p.color)}">
+            ${esc(p.name.charAt(0).toUpperCase())}
+            <span class="user-badge">${t.icon}</span>
+          </div>
+          <span class="user-label">${esc(p.name)}${p.isMe ? " (tú)" : ""} · ${label}</span>
+        </div>`;
+      const icon = L.divIcon({ className: "", html, iconSize: [120, 64], iconAnchor: [60, 20] });
+      if (!markers[p.id]) markers[p.id] = L.marker([p.lat, p.lng], { icon, zIndexOffset: p.isMe ? 500 : 0 }).addTo(map);
+      else { markers[p.id].setLatLng([p.lat, p.lng]); markers[p.id].setIcon(icon); }
+
+      if (state.meetPoint && !p.arrived) {
+        const ll = [[p.lat, p.lng], [state.meetPoint.lat, state.meetPoint.lng]];
+        if (!routeLines[p.id]) {
+          routeLines[p.id] = L.polyline(ll, { color: safeColor(p.color), weight: 3, dashArray: "6, 8", opacity: 0.85 }).addTo(map);
+        } else routeLines[p.id].setLatLngs(ll);
+      } else if (routeLines[p.id]) {
+        map.removeLayer(routeLines[p.id]); delete routeLines[p.id];
+      }
+    }
+
+    /* ---------- render ---------- */
+    function getAllParticipants() {
+      const list = [];
+      if (state.myCoords) {
+        list.push({
+          id: state.myId, name: state.myName || "Tú", color: state.myColor, transport: state.myTransport,
+          lat: state.myCoords.lat, lng: state.myCoords.lng, accuracy: state.myCoords.accuracy,
+          arrived: state.myArrived, isMe: true
+        });
+      }
+      const now = Date.now();
+      for (const p of Object.values(state.peers)) {
+        if (now - p.lastSeen > PEER_TIMEOUT_MS) { removePerson(p.id); continue; }
+        list.push(p);
+      }
+      return list;
+    }
+
+    function renderAll() {
+      const all = getAllParticipants();
+      $("onlineCount").textContent = `${all.length} en mapa`;
+      const container = $("participantsList");
+      container.textContent = "";
+      let maxEta = 0, pending = 0;
+
+      for (const p of all) {
+        const t = SPEEDS[p.transport] || SPEEDS.pie;
+        let dist = null, eta = null;
+
+        if (state.meetPoint) {
+          dist = distanceMeters(p.lat, p.lng, state.meetPoint.lat, state.meetPoint.lng);
+          if (p.isMe && dist <= ARRIVE_M && !state.myArrived) {
+            state.myArrived = true;
+            p.arrived = true;
+            send("gps_ping", myPayload());
+            if (state.autoStopPrivacy) stopGPS("🛡️ Llegaste. GPS apagado por privacidad.");
+          }
+          if (!p.isMe && dist <= ARRIVE_M) p.arrived = true;
+          if (!p.arrived) {
+            eta = Math.max(1, Math.ceil(dist / t.mps / 60));
+            pending++;
+            if (eta > maxEta) maxEta = eta;
+            if (!p.isMe && dist <= NEAR_M && !state.notifiedNear.has(p.id)) {
+              state.notifiedNear.add(p.id);
+              nearAlert(p.name, dist);
+            }
+          }
+        }
+        updatePersonMarker(p, dist);
+
+        const card = document.createElement("div");
+        card.className = "shrink-0 w-40 rounded-2xl bg-slate-800 border border-slate-700 p-2.5 cursor-pointer";
+        card.addEventListener("click", () => map.flyTo([p.lat, p.lng], 17, { duration: 0.6 }));
+        const status = !state.meetPoint
+          ? `Precisión ±${Math.round(p.accuracy || 0)} m`
+          : p.arrived ? "✅ En el punto" : `${fmtDist(dist)} · ~${eta} min`;
+        card.innerHTML = `
+          <div class="flex items-center justify-between gap-1.5">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="h-6 w-6 rounded-full text-xs font-black grid place-items-center text-white shrink-0" style="background:${safeColor(p.color)}">${esc(p.name.charAt(0).toUpperCase())}</span>
+              <span class="text-xs font-extrabold truncate">${esc(p.name)}${p.isMe ? " (tú)" : ""}</span>
+            </div>
+            <span class="text-xs">${t.icon}</span>
+          </div>
+          <div class="mt-2 text-[11px] font-bold ${p.arrived ? "text-emerald-400" : "text-slate-300"}">${esc(status)}</div>`;
+        container.appendChild(card);
+      }
+
+      const h = $("summaryHeadline");
+      if (!state.meetPoint) h.textContent = "Mantén presionado el mapa para elegir dónde verse";
+      else if (all.length && pending === 0) h.textContent = "🎉 Todos llegaron al punto";
+      else h.textContent = `En camino: ${pending} · el más lejano ~${maxEta} min`;
+    }
+
+    /* ---------- GPS ---------- */
+    let firstFix = true;
+    function startRealGPS() {
+      if (!("geolocation" in navigator)) { $("gpsStatusText").textContent = "❌ Este navegador no tiene GPS."; return; }
+      if (state.watchId !== null) return;
+      if (!state.myCoords) $("gpsStatusText").textContent = "Pidiendo permiso de ubicación...";
+      state.watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy } = pos.coords;
+          state.myCoords = { lat: latitude, lng: longitude, accuracy };
+          $("statusDot").className = "h-3 w-3 rounded-full bg-emerald-400 shrink-0";
+          $("gpsStatusText").textContent = `GPS activo (±${Math.round(accuracy)} m)` + (state.connected ? " · en línea" : "");
+          if (firstFix) { firstFix = false; map.setView([latitude, longitude], 16); }
+          send("gps_ping", myPayload());
+          renderAll();
+        },
+        (err) => {
+          $("statusDot").className = "h-3 w-3 rounded-full bg-red-500 shrink-0";
+          $("gpsStatusText").textContent = err.code === 1
+            ? "⚠️ Permiso de ubicación denegado. Actívalo en el navegador y recarga."
+            : "⚠️ Sin señal GPS. Revisa que la ubicación esté encendida.";
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+      );
+    }
+    function stopGPS(msg) {
+      if (state.watchId !== null) { navigator.geolocation.clearWatch(state.watchId); state.watchId = null; }
+      if (msg) $("gpsStatusText").textContent = msg;
+    }
+
+    // Mantener la pantalla encendida: con la pantalla apagada el navegador deja de leer el GPS
+    async function keepAwake() {
+      try { if ("wakeLock" in navigator && !document.hidden) state.wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && state.started) { keepAwake(); send("hello", { id: state.myId }); }
+    });
+
+    /* ---------- tiempo real (Supabase Broadcast) ---------- */
+    function myPayload() {
+      if (!state.myCoords) return null;
+      return {
+        id: state.myId, name: state.myName || "Amigo", color: state.myColor, transport: state.myTransport,
+        lat: state.myCoords.lat, lng: state.myCoords.lng, accuracy: state.myCoords.accuracy, arrived: state.myArrived
+      };
+    }
+    function send(event, payload) {
+      if (!state.channel || !state.connected || !payload) return;
+      state.channel.send({ type: "broadcast", event, payload }).catch?.(() => {});
+    }
+
+    async function connectRealtimeRoom() {
+      if (!state.sbUrl || !state.sbKey || !window.supabase) {
+        state.connected = false;
+        toast("Modo solo local: falta la conexión Supabase ⚙️");
+        return;
+      }
+      try {
+        if (!state.client || state.client._enc_url !== state.sbUrl + state.sbKey) {
+          if (state.client && state.channel) await state.client.removeChannel(state.channel);
+          state.client = window.supabase.createClient(state.sbUrl, state.sbKey, { realtime: { params: { eventsPerSecond: 10 } } });
+          state.client._enc_url = state.sbUrl + state.sbKey;
+        } else if (state.channel) {
+          await state.client.removeChannel(state.channel);
+        }
+        state.connected = false;
+        Object.keys(state.peers).forEach(removePerson);
+
+        const channel = state.client.channel(`encuentro_${state.room}`, { config: { broadcast: { self: false } } });
+
+        channel
+          .on("broadcast", { event: "gps_ping" }, ({ payload: p }) => {
+            if (!p || p.id === state.myId || typeof p.id !== "string" || !isCoord(p.lat, p.lng)) return;
+            const id = p.id.slice(0, 24);
+            state.peers[id] = {
+              id, name: cleanName(p.name), color: safeColor(p.color),
+              transport: SPEEDS[p.transport] ? p.transport : "pie",
+              lat: p.lat, lng: p.lng, accuracy: Number(p.accuracy) || 0,
+              arrived: !!p.arrived, lastSeen: Date.now()
+            };
+            renderAll();
+          })
+          .on("broadcast", { event: "meetpoint_update" }, ({ payload }) => acceptRemoteMeetPoint(payload))
+          .on("broadcast", { event: "hello" }, () => {
+            // alguien entró: le mandamos nuestra posición y el punto actual
+            send("gps_ping", myPayload());
+            if (state.meetPoint) send("meetpoint_update", { ...state.meetPoint, _sync: true });
+          })
+          .on("broadcast", { event: "bye" }, ({ payload }) => {
+            if (payload?.id) { removePerson(String(payload.id)); renderAll(); }
+          })
+          .on("broadcast", { event: "chat_msg" }, ({ payload }) => {
+            if (!payload) return;
+            showChatMessage(cleanName(payload.sender), String(payload.text ?? "").slice(0, 120), safeColor(payload.color));
+            playAlertBeep();
+          })
+          .subscribe((status) => {
+            if (status === "SUBSCRIBED") {
+              state.connected = true;
+              $("statusDot").className = "h-3 w-3 rounded-full bg-emerald-400 shrink-0";
+              send("hello", { id: state.myId });
+              send("gps_ping", myPayload());
+              toast("Conectado a la sala");
+            } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              state.connected = false;
+              $("statusDot").className = "h-3 w-3 rounded-full bg-red-500 shrink-0";
+              toast("⚠️ No se pudo conectar. Revisa la URL y la llave de Supabase.");
+            } else if (status === "CLOSED") {
+              state.connected = false;
+            }
+          });
+
+        state.channel = channel;
+      } catch (e) {
+        console.error(e);
+        toast("⚠️ Error al conectar con Supabase");
+      }
+    }
+
+    setInterval(() => {
+      if (!state.started) return;
+      send("gps_ping", myPayload());
+      renderAll(); // también limpia a quienes se desconectaron
+    }, HEARTBEAT_MS);
+
+    window.addEventListener("pagehide", () => send("bye", { id: state.myId }));
+
+    /* ---------- chat ---------- */
+    function showChatMessage(sender, text, color) {
+      const box = $("lastChatMsg");
+      box.classList.remove("hidden");
+      box.textContent = "";
+      const strong = document.createElement("strong");
+      strong.style.color = color;
+      strong.textContent = sender + ": ";
+      box.append(strong, document.createTextNode(text));
+    }
+    $("chatForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const input = $("chatInput");
+      const text = input.value.trim().slice(0, 120);
+      if (!text) return;
+      input.value = "";
+      showChatMessage(state.myName || "Tú", text, state.myColor);
+      send("chat_msg", { sender: state.myName || "Amigo", text, color: state.myColor });
+    });
+
+    /* ---------- botones ---------- */
+    $("btnCenterMe").addEventListener("click", () => {
+      if (state.myCoords) map.flyTo([state.myCoords.lat, state.myCoords.lng], 17, { duration: 0.7 });
+      else toast("Aún sin señal GPS");
+    });
+    $("btnFitAll").addEventListener("click", () => {
+      const pts = getAllParticipants().map((p) => [p.lat, p.lng]);
+      if (state.meetPoint) pts.push([state.meetPoint.lat, state.meetPoint.lng]);
+      if (pts.length > 1) map.flyToBounds(pts, { padding: [60, 60], maxZoom: 17, duration: 0.7 });
+      else if (pts.length === 1) map.flyTo(pts[0], 16);
+    });
+    $("btnMidpoint").addEventListener("click", () => {
+      const all = getAllParticipants();
+      if (all.length < 2) { toast("Se necesitan al menos 2 personas en el mapa"); return; }
+      const lat = all.reduce((a, p) => a + p.lat, 0) / all.length;
+      const lng = all.reduce((a, p) => a + p.lng, 0) / all.length;
+      setMeetingPoint(lat, lng, state.myName, Date.now(), true);
+      map.flyTo([lat, lng], 15, { duration: 0.7 });
+      toast("★ Punto medio fijado para todos");
+    });
+    $("btnVoiceStatus").addEventListener("click", () => {
+      if (!("speechSynthesis" in window)) return;
+      const all = getAllParticipants();
+      let msg;
+      if (!state.meetPoint || !all.length) msg = "Aún no hay punto de encuentro.";
+      else msg = all.map((p) => {
+        const d = distanceMeters(p.lat, p.lng, state.meetPoint.lat, state.meetPoint.lng);
+        const n = p.isMe ? "Tú" : p.name;
+        return d <= ARRIVE_M ? `${n} ya llegó.` : `${n} está a ${d} metros.`;
+      }).join(" ");
+      const u = new SpeechSynthesisUtterance(msg);
+      u.lang = "es-CL";
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    });
+
+    $("btnShareLink").addEventListener("click", async () => {
+      if (!state.room) { toast("Primero entra a una sala"); return; }
+      const url = new URL(location.origin + location.pathname);
+      url.searchParams.set("room", state.room);
+      if (!DEFAULT_SUPABASE_URL && state.sbUrl && state.sbKey) {
+        url.searchParams.set("sbu", b64e(state.sbUrl));
+        url.searchParams.set("sbk", b64e(state.sbKey));
+      }
+      const shareUrl = url.toString();
+      if (navigator.share) {
+        try { await navigator.share({ title: "Encuentro GPS", text: `Entra a la sala "${state.room}" para vernos en el mapa:`, url: shareUrl }); return; }
+        catch (e) { if (e && e.name === "AbortError") return; }
+      }
+      try { await navigator.clipboard.writeText(shareUrl); toast("🔗 Link copiado. Pégalo en WhatsApp."); }
+      catch { window.prompt("Copia este link:", shareUrl); }
+    });
+
+    $("btnTogglePrivacy").addEventListener("click", (e) => {
+      state.autoStopPrivacy = !state.autoStopPrivacy;
+      e.currentTarget.textContent = `🛡️ Apagar al llegar: ${state.autoStopPrivacy ? "ON" : "OFF"}`;
+      if (!state.autoStopPrivacy && state.started && state.watchId === null) startRealGPS();
+    });
+
+    $("btnOpenConfig").addEventListener("click", () => $("setupModal").classList.remove("hidden"));
+
+    /* ---------- ingreso ---------- */
+    $("inputName").value = state.myName;
+    $("inputRoom").value = state.room;
+    $("inputTransport").value = state.myTransport;
+    $("inputSbUrl").value = state.sbUrl;
+    $("inputSbKey").value = state.sbKey;
+    if (DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_KEY) $("supabaseDetails").classList.add("hidden");
+    if (invitedRoom) {
+      $("inviteNotice").textContent = `Te invitaron a la sala "${invitedRoom}". Escribe tu nombre y entra.`;
+      $("inviteNotice").classList.remove("hidden");
+    }
+    if (!state.sbUrl || !state.sbKey) $("supabaseDetails").open = true;
+
+    $("btnStartApp").addEventListener("click", () => {
+      const name = cleanName($("inputName").value) ;
+      const room = cleanRoom($("inputRoom").value) || randomRoom();
+      const roomChanged = room !== state.room || !state.channel;
+      state.myName = name;
+      state.myTransport = $("inputTransport").value;
+      state.room = room;
+      if (!DEFAULT_SUPABASE_URL) state.sbUrl = $("inputSbUrl").value.trim().replace(/\/+$/, "");
+      if (!DEFAULT_SUPABASE_KEY) state.sbKey = $("inputSbKey").value.trim();
+
+      ls.set("enc_myName", name);
+      ls.set("enc_myTransport", state.myTransport);
+      if (state.sbUrl) ls.set("enc_sbUrl", state.sbUrl);
+      if (state.sbKey) ls.set("enc_sbKey", state.sbKey);
+
+      $("inputRoom").value = room;
+      $("roomTitle").textContent = `Sala: ${room}`;
+      $("setupModal").classList.add("hidden");
+      history.replaceState(null, "", `${location.pathname}?room=${encodeURIComponent(room)}`);
+
+      if ("Notification" in window && Notification.permission === "default") {
+        try { Notification.requestPermission(); } catch {}
+      }
+      // desbloquear audio en iOS con este toque
+      try { const C = window.AudioContext || window.webkitAudioContext; audioCtx = audioCtx || new C(); audioCtx.resume(); } catch {}
+
+      state.started = true;
+      setTimeout(() => map.invalidateSize(), 150);
+      keepAwake();
+      startRealGPS();
+      if (roomChanged) {
+        state.meetPoint = null;
+        if (meetMarker) { map.removeLayer(meetMarker); meetMarker = null; }
+        connectRealtimeRoom();
+      } else {
+        send("gps_ping", myPayload());
+      }
+      renderAll();
+    });
+  </script>
+</body>
+</html>
